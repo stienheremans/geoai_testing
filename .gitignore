@@ -21,6 +21,8 @@ docs/workshops/**/*.txt
 *.geojson
 *.gpkg
 *.csv
+*.mp4
+*.gif
 docs/examples/*.md
 *.xml
 docs/examples/output/
@@ -30,8 +32,13 @@ docs/workshops/**/*.jpg
 docs/workshops/**/*.png
 docs/examples/data/
 docs/workshops/data/
+docs/examples/ndvi_regression_output/
+docs/examples/timm_regression_output/
+docs/examples/ndvi_model/
 *.pth
-
+*.ckpt
+docs/examples/cache/
+docs/examples/*_cache/
 # Distribution / packaging
 .Python
 env/
@@ -74,6 +81,8 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+EuroSAT_RGB/
+docs/examples/**/
 
 # Translations
 *.mo
@@ -133,3 +142,5 @@ ENV/
 .vscode/
 .DS_Store
 CLAUDE.md
+lightning_logs/
+TASKS.md

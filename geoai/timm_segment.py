@@ -1,7 +1,10 @@
 """Module for training semantic segmentation models using timm encoders with PyTorch Lightning."""
 
+import logging
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
@@ -98,7 +101,7 @@ class TimmSegmentationModel(pl.LightningModule):
                     num_classes=num_classes,
                     in_chans=in_channels,
                 )
-                print(f"Loaded timm model: {timm_model_name}")
+                logger.info(f"Loaded timm model: {timm_model_name}")
             except Exception as e:
                 raise ValueError(
                     f"Failed to load timm model '{timm_model_name}'. "
@@ -486,7 +489,7 @@ def train_timm_segmentation(
     )
 
     # Train model
-    print(f"Training {encoder_name} {architecture} for {num_epochs} epochs...")
+    logger.info(f"Training {encoder_name} {architecture} for {num_epochs} epochs...")
     trainer.fit(
         model,
         train_dataloaders=train_loader,
@@ -503,10 +506,10 @@ def train_timm_segmentation(
             num_workers=num_workers,
             pin_memory=True,
         )
-        print("\nTesting model on test set...")
+        logger.info("Testing model on test set...")
         trainer.test(model, dataloaders=test_loader)
 
-    print(f"\nBest model saved at: {checkpoint_callback.best_model_path}")
+    logger.info(f"Best model saved at: {checkpoint_callback.best_model_path}")
 
     # Save training history in compatible format
     metrics = trainer.logged_metrics
@@ -542,7 +545,7 @@ def train_timm_segmentation(
     # Save history
     history_path = os.path.join(model_dir, "training_history.pth")
     torch.save(history, history_path)
-    print(f"Training history saved to: {history_path}")
+    logger.info(f"Training history saved to: {history_path}")
 
     return model
 
@@ -634,6 +637,7 @@ def train_timm_segmentation_model(
     seed: int = 42,
     num_workers: int = 4,
     freeze_encoder: bool = False,
+    class_weights: Optional[List[float]] = None,
     monitor_metric: str = "val_iou",
     mode: str = "max",
     patience: int = 10,
@@ -642,6 +646,8 @@ def train_timm_segmentation_model(
     device: Optional[str] = None,
     use_timm_model: bool = False,
     timm_model_name: Optional[str] = None,
+    train_transforms: Optional[Callable] = None,
+    val_transforms: Optional[Callable] = None,
     **kwargs: Any,
 ) -> torch.nn.Module:
     """
@@ -676,6 +682,8 @@ def train_timm_segmentation_model(
         seed (int): Random seed for reproducibility.
         num_workers (int): Number of data loading workers.
         freeze_encoder (bool): Freeze encoder during training.
+        class_weights (list of float, optional): Weights for each class in the
+            loss function. Useful for imbalanced datasets. Defaults to None.
         monitor_metric (str): Metric to monitor ('val_loss' or 'val_iou').
         mode (str): 'min' for loss, 'max' for metrics.
         patience (int): Early stopping patience.
@@ -684,6 +692,15 @@ def train_timm_segmentation_model(
         device (str, optional): Device to use. Auto-detected if None.
         use_timm_model (bool): Load complete segmentation model from timm/HF Hub.
         timm_model_name (str, optional): Model name from HF Hub (e.g., 'hf-hub:nvidia/mit-b0').
+        train_transforms (callable, optional): Custom transforms for training data.
+            Should be a callable that accepts (image, mask) tensors and returns
+            transformed (image, mask). Both image and mask should be torch.Tensor
+            objects. The image tensor is in CHW format (channels, height, width),
+            and the mask tensor in HW format (height, width). If None, no
+            augmentation is applied. Defaults to None.
+        val_transforms (callable, optional): Custom transforms for validation data.
+            Same signature as train_transforms. If None, no augmentation is
+            applied. Defaults to None.
         **kwargs: Additional arguments for training.
 
     Returns:
@@ -706,7 +723,7 @@ def train_timm_segmentation_model(
     if input_format.lower() == "coco":
         # Parse COCO format annotations
         if verbose:
-            print(f"Loading COCO format annotations from {labels_dir}")
+            logger.info(f"Loading COCO format annotations from {labels_dir}")
         # For COCO format, labels_dir is path to instances.json
         # Labels are typically in a "labels" directory parallel to "annotations"
         coco_root = os.path.dirname(os.path.dirname(labels_dir))  # Go up two levels
@@ -717,7 +734,7 @@ def train_timm_segmentation_model(
     elif input_format.lower() == "yolo":
         # Parse YOLO format annotations
         if verbose:
-            print(f"Loading YOLO format data from {images_dir}")
+            logger.info(f"Loading YOLO format data from {images_dir}")
         image_paths, label_paths = parse_yolo_annotations(images_dir)
     else:
         # Default: directory format
@@ -741,7 +758,7 @@ def train_timm_segmentation_model(
         )
 
     if verbose:
-        print(f"Found {len(image_paths)} image-label pairs")
+        logger.info(f"Found {len(image_paths)} image-label pairs")
 
     # Split into train and validation
     train_images, val_images, train_labels, val_labels = train_test_split(
@@ -749,20 +766,22 @@ def train_timm_segmentation_model(
     )
 
     if verbose:
-        print(f"Training samples: {len(train_images)}")
-        print(f"Validation samples: {len(val_images)}")
+        logger.info(f"Training samples: {len(train_images)}")
+        logger.info(f"Validation samples: {len(val_images)}")
 
     # Create datasets
     train_dataset = SegmentationDataset(
         image_paths=train_images,
         mask_paths=train_labels,
         num_channels=num_channels,
+        transform=train_transforms,
     )
 
     val_dataset = SegmentationDataset(
         image_paths=val_images,
         mask_paths=val_labels,
         num_channels=num_channels,
+        transform=val_transforms,
     )
 
     # Train model
@@ -782,6 +801,7 @@ def train_timm_segmentation_model(
         weight_decay=weight_decay,
         num_workers=num_workers,
         freeze_encoder=freeze_encoder,
+        class_weights=class_weights,
         accelerator="auto" if device is None else device,
         monitor_metric=monitor_metric,
         mode=mode,
@@ -793,7 +813,7 @@ def train_timm_segmentation_model(
     )
 
     if verbose:
-        print(f"\nTraining completed. Model saved to {output_dir}")
+        logger.info(f"Training completed. Model saved to {output_dir}")
 
     return model.model  # Return the underlying model
 
@@ -813,13 +833,17 @@ def timm_semantic_segmentation(
     quiet: bool = False,
     use_timm_model: bool = False,
     timm_model_name: Optional[str] = None,
+    probability_path: Optional[str] = None,
+    probability_threshold: Optional[float] = None,
+    save_class_probabilities: bool = False,
     **kwargs: Any,
 ) -> None:
     """
     Perform semantic segmentation on a raster using a trained timm model.
 
     This function performs inference on a GeoTIFF using a sliding window approach
-    and saves the result as a georeferenced raster.
+    and saves the result as a georeferenced raster. Overlapping windows are blended
+    using edge-distance weighted averaging of class probabilities.
 
     Args:
         input_path (str): Path to input GeoTIFF file.
@@ -836,6 +860,14 @@ def timm_semantic_segmentation(
         quiet (bool): If True, suppress progress messages.
         use_timm_model (bool): If True, model was trained with timm model from HF Hub.
         timm_model_name (str, optional): Model name from HF Hub used during training.
+        probability_path (str, optional): Path to save probability map. If provided,
+            the normalized class probabilities will be saved as a multi-band raster.
+        probability_threshold (float, optional): Probability threshold for binary
+            classification. Only valid when num_classes=2. Pixels with class 1
+            probability >= threshold are classified as 1, otherwise 0.
+        save_class_probabilities (bool): If True and probability_path is provided,
+            save individual per-class probability files in addition to the
+            multi-band probability raster.
         **kwargs: Additional arguments.
     """
     import rasterio
@@ -843,6 +875,16 @@ def timm_semantic_segmentation(
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Validate probability_threshold
+    if probability_threshold is not None:
+        if not (0 <= probability_threshold <= 1):
+            raise ValueError("probability_threshold must be between 0 and 1")
+        if num_classes != 2:
+            raise ValueError(
+                "probability_threshold is only supported for binary "
+                "classification (num_classes=2)"
+            )
 
     # Load model
     if model_path.endswith(".ckpt"):
@@ -887,7 +929,20 @@ def timm_semantic_segmentation(
                     f"Error: {str(e)}"
                 )
 
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        checkpoint = torch.load(model_path, map_location=device)
+        # Extract state_dict from common checkpoint wrapper formats
+        if isinstance(checkpoint, dict):
+            for key in ("state_dict", "model_state_dict", "model"):
+                if key in checkpoint:
+                    checkpoint = checkpoint[key]
+                    break
+        state_dict = checkpoint
+        # Remove 'module.' prefix if present (from DataParallel training)
+        if any(key.startswith("module.") for key in state_dict.keys()):
+            state_dict = {
+                key.replace("module.", ""): value for key, value in state_dict.items()
+            }
+        model.load_state_dict(state_dict)
 
     model.eval()
     model = model.to(device)
@@ -903,11 +958,11 @@ def timm_semantic_segmentation(
         n_cols = int(np.ceil((width - overlap) / stride))
 
         if not quiet:
-            print(f"Processing {n_rows} x {n_cols} = {n_rows * n_cols} windows")
+            logger.info(f"Processing {n_rows} x {n_cols} = {n_rows * n_cols} windows")
 
-        # Initialize output array (use int32 to avoid overflow during accumulation)
-        output = np.zeros((height, width), dtype=np.int32)
-        count = np.zeros((height, width), dtype=np.int32)
+        # Initialize probability accumulators for proper overlap blending
+        prob_accumulator = np.zeros((num_classes, height, width), dtype=np.float32)
+        count_accumulator = np.zeros((height, width), dtype=np.float32)
 
         # Process windows
         with torch.no_grad():
@@ -950,26 +1005,121 @@ def timm_semantic_segmentation(
                     # Predict
                     img_tensor = torch.from_numpy(img).unsqueeze(0).to(device)
                     logits = model(img_tensor)
-                    pred = torch.argmax(logits, dim=1).squeeze(0).cpu().numpy()
 
-                    # Crop to actual size
-                    pred = pred[:h, :w]
+                    # Apply softmax to get class probabilities
+                    probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
 
-                    # Add to output
-                    output[row_start:row_end, col_start:col_end] += pred
-                    count[row_start:row_end, col_start:col_end] += 1
+                    # Crop to actual size [C, h, w]
+                    probs = probs[:, :h, :w]
 
-        # Average overlapping predictions
-        output = (output / np.maximum(count, 1)).astype(np.uint8)
+                    # Create edge-distance weight matrix for blending
+                    y_grid, x_grid = np.mgrid[0:h, 0:w]
+                    dist_from_left = x_grid
+                    dist_from_right = w - x_grid - 1
+                    dist_from_top = y_grid
+                    dist_from_bottom = h - y_grid - 1
+
+                    edge_distance = np.minimum.reduce(
+                        [
+                            dist_from_left,
+                            dist_from_right,
+                            dist_from_top,
+                            dist_from_bottom,
+                        ]
+                    )
+                    edge_distance = np.minimum(edge_distance, overlap / 2)
+
+                    # For non-overlapping windows, use uniform weight
+                    if overlap == 0:
+                        weight = np.ones((h, w), dtype=np.float32)
+                    else:
+                        # Avoid zero weights - use minimum weight of 0.1
+                        weight = np.maximum(edge_distance / (overlap / 2), 0.1)
+
+                    # Accumulate weighted probabilities for each class
+                    y_slice = slice(row_start, row_end)
+                    x_slice = slice(col_start, col_end)
+
+                    for class_idx in range(num_classes):
+                        prob_accumulator[class_idx, y_slice, x_slice] += (
+                            probs[class_idx] * weight
+                        )
+
+                    # Update weight accumulator
+                    count_accumulator[y_slice, x_slice] += weight
+
+        # Calculate final mask from accumulated probabilities
+        output = np.zeros((height, width), dtype=np.uint8)
+        valid_pixels = count_accumulator > 0
+
+        # Normalize accumulated probabilities by weights
+        normalized_probs = np.zeros_like(prob_accumulator)
+        if np.any(valid_pixels):
+            for class_idx in range(num_classes):
+                normalized_probs[class_idx, valid_pixels] = (
+                    prob_accumulator[class_idx, valid_pixels]
+                    / count_accumulator[valid_pixels]
+                )
+
+            # Apply threshold for binary classification or use argmax
+            if probability_threshold is not None and num_classes == 2:
+                output[valid_pixels] = (
+                    normalized_probs[1, valid_pixels] >= probability_threshold
+                ).astype(np.uint8)
+                if not quiet:
+                    logger.info(f"Using probability threshold: {probability_threshold}")
+            else:
+                output[valid_pixels] = np.argmax(
+                    normalized_probs[:, valid_pixels], axis=0
+                ).astype(np.uint8)
 
     # Save output
     meta.update({"count": 1, "dtype": "uint8", "compress": "lzw"})
+
+    out_dir = os.path.abspath(os.path.dirname(output_path))
+    os.makedirs(out_dir, exist_ok=True)
 
     with rasterio.open(output_path, "w", **meta) as dst:
         dst.write(output, 1)
 
     if not quiet:
-        print(f"Segmentation saved to {output_path}")
+        logger.info(f"Segmentation saved to {output_path}")
+
+    # Save probability map if requested
+    if probability_path is not None:
+        prob_dir = os.path.abspath(os.path.dirname(probability_path))
+        os.makedirs(prob_dir, exist_ok=True)
+
+        # Prepare probability output metadata
+        prob_meta = meta.copy()
+        prob_meta.update({"count": num_classes, "dtype": "float32"})
+
+        # Save normalized probabilities as multi-band raster
+        with rasterio.open(probability_path, "w", **prob_meta) as dst:
+            for class_idx in range(num_classes):
+                dst.write(normalized_probs[class_idx], class_idx + 1)
+
+        if not quiet:
+            logger.info(f"Saved probability map to {probability_path}")
+
+        # Save individual class probabilities if requested
+        if save_class_probabilities:
+            single_band_meta = meta.copy()
+            single_band_meta.update({"count": 1, "dtype": "float32"})
+
+            prob_base = os.path.splitext(probability_path)[0]
+            prob_ext = os.path.splitext(probability_path)[1]
+
+            for class_idx in range(num_classes):
+                class_prob_path = f"{prob_base}_class_{class_idx}{prob_ext}"
+
+                with rasterio.open(class_prob_path, "w", **single_band_meta) as dst:
+                    dst.write(normalized_probs[class_idx], 1)
+
+                if not quiet:
+                    logger.info(
+                        f"Saved class {class_idx} probability to {class_prob_path}"
+                    )
 
 
 def push_timm_model_to_hub(
@@ -985,7 +1135,7 @@ def push_timm_model_to_hub(
     private: bool = False,
     token: Optional[str] = None,
     **kwargs: Any,
-) -> str:
+) -> Optional[str]:
     """
     Push a trained timm segmentation model to Hugging Face Hub.
 
@@ -1004,15 +1154,17 @@ def push_timm_model_to_hub(
         **kwargs: Additional arguments for push_to_hub.
 
     Returns:
-        str: URL of the uploaded model on HF Hub.
+        str: URL of the uploaded model on HF Hub, or None if
+        ``huggingface_hub`` is not installed.
     """
     try:
         from huggingface_hub import HfApi, create_repo
     except ImportError:
-        raise ImportError(
+        logger.error(
             "huggingface_hub is required to push models. "
             "Install it with: pip install huggingface-hub"
         )
+        return None
 
     # Load model
     if model_path.endswith(".ckpt"):
@@ -1049,14 +1201,27 @@ def push_timm_model_to_hub(
                 classes=num_classes,
             )
 
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        checkpoint = torch.load(model_path, map_location="cpu")
+        # Extract state_dict from common checkpoint wrapper formats
+        if isinstance(checkpoint, dict):
+            for key in ("state_dict", "model_state_dict", "model"):
+                if key in checkpoint:
+                    checkpoint = checkpoint[key]
+                    break
+        state_dict = checkpoint
+        # Remove 'module.' prefix if present (from DataParallel training)
+        if any(key.startswith("module.") for key in state_dict.keys()):
+            state_dict = {
+                key.replace("module.", ""): value for key, value in state_dict.items()
+            }
+        model.load_state_dict(state_dict)
 
     # Create repository if it doesn't exist
     api = HfApi(token=token)
     try:
         create_repo(repo_id, private=private, token=token, exist_ok=True)
     except Exception as e:
-        print(f"Repository creation note: {e}")
+        logger.warning(f"Repository creation note: {e}")
 
     # Save model configuration
     config = {
@@ -1096,5 +1261,103 @@ def push_timm_model_to_hub(
         )
 
     url = f"https://huggingface.co/{repo_id}"
-    print(f"Model successfully pushed to: {url}")
+    logger.info(f"Model successfully pushed to: {url}")
     return url
+
+
+def timm_segmentation_from_hub(
+    input_path: str,
+    output_path: str,
+    repo_id: str,
+    window_size: int = 512,
+    overlap: int = 256,
+    batch_size: int = 4,
+    device: Optional[str] = None,
+    quiet: bool = False,
+    token: Optional[str] = None,
+    probability_path: Optional[str] = None,
+    probability_threshold: Optional[float] = None,
+    save_class_probabilities: bool = False,
+    **kwargs: Any,
+) -> None:
+    """Perform semantic segmentation using a model from HuggingFace Hub.
+
+    Downloads the model and config from the specified HuggingFace repository
+    and runs sliding-window inference on the input GeoTIFF.
+
+    Args:
+        input_path (str): Path to input GeoTIFF file.
+        output_path (str): Path to save output segmentation mask.
+        repo_id (str): HuggingFace repository ID
+            (e.g., 'giswqs/whu-building-unetplusplus-convnext-base').
+        window_size (int): Size of sliding window for inference. Defaults to 512.
+        overlap (int): Overlap between adjacent windows. Defaults to 256.
+        batch_size (int): Batch size for inference. Defaults to 4.
+        device (str, optional): Device to use ('cuda' or 'cpu').
+            Auto-detected if None.
+        quiet (bool): If True, suppress progress messages. Defaults to False.
+        token (str, optional): HuggingFace API token. If None, uses
+            logged-in token.
+        probability_path (str, optional): Path to save probability map. If
+            provided, the normalized class probabilities will be saved as a
+            multi-band raster.
+        probability_threshold (float, optional): Probability threshold for
+            binary classification. Only valid when num_classes=2. Pixels with
+            class 1 probability >= threshold are classified as 1, otherwise 0.
+        save_class_probabilities (bool): If True and probability_path is
+            provided, save individual per-class probability files in addition
+            to the multi-band probability raster.
+        **kwargs: Additional arguments passed to timm_semantic_segmentation.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        logger.error(
+            "huggingface_hub is required. Install it with: pip install huggingface-hub"
+        )
+        return None
+
+    import json
+
+    # Download model and config from HuggingFace Hub
+    if not quiet:
+        logger.info(f"Downloading model from {repo_id}...")
+
+    model_path = hf_hub_download(repo_id=repo_id, filename="model.pth", token=token)
+    config_path = hf_hub_download(repo_id=repo_id, filename="config.json", token=token)
+
+    # Load config
+    with open(config_path) as f:
+        config = json.load(f)
+
+    if not quiet:
+        logger.info(f"Model config: {config}")
+
+    encoder_name = config.get("encoder_name", "resnet50")
+    architecture = config.get("architecture", "unet")
+    num_channels = config.get("num_channels", 3)
+    num_classes = config.get("num_classes", 2)
+    use_timm_model = config.get("use_timm_model", False)
+    timm_model_name = config.get("timm_model_name", None)
+
+    # Run inference using existing function
+    timm_semantic_segmentation(
+        input_path=input_path,
+        output_path=output_path,
+        model_path=model_path,
+        encoder_name=encoder_name,
+        architecture=architecture,
+        num_channels=num_channels,
+        num_classes=num_classes,
+        window_size=window_size,
+        overlap=overlap,
+        batch_size=batch_size,
+        device=device,
+        quiet=quiet,
+        use_timm_model=use_timm_model,
+        timm_model_name=timm_model_name,
+        probability_path=probability_path,
+        probability_threshold=probability_threshold,
+        save_class_probabilities=save_class_probabilities,
+        **kwargs,
+    )
